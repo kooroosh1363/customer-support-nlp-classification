@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from src.data import load_dataset
-from src.pipeline import confidence_score
+from src.pipeline import confidence_score, main
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_premerge_hardening_invariants():
     """Strict independent checks over data, saved model, metrics, and routing policy."""
+    # Generate fresh artifacts in the same run so this test never depends on test order.
+    main()
     train, val, test, audit, classes = load_dataset(42)
 
     # Dataset integrity and split invariants.
