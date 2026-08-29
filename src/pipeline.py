@@ -59,18 +59,30 @@ def confidence_score(model: Pipeline, texts: pd.Series) -> np.ndarray:
     scores = clf.decision_function(X)
     if scores.ndim == 1:
         return np.abs(scores)
+    # Sort the two largest decision scores explicitly. np.partition alone does not
+    # guarantee their internal order, so subtracting columns directly can be wrong.
     top2 = np.partition(scores, -2, axis=1)[:, -2:]
+    top2.sort(axis=1)
     return top2[:, 1] - top2[:, 0]
 
 
 def choose_escalation_threshold(y_true, y_pred, confidence, target_auto_accuracy=0.90):
-    candidates = np.unique(np.quantile(confidence, np.linspace(0.0, 0.95, 120)))
+    """Choose the exact validation confidence boundary with maximum coverage.
+
+    Every distinct confidence score is considered. Among thresholds meeting the
+    target auto-route accuracy, coverage is maximized; ties prefer higher accuracy
+    and then the lower threshold. This avoids approximation from a quantile grid.
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    confidence = np.asarray(confidence, dtype=float)
+    candidates = np.unique(confidence)
     best = None
     for t in candidates:
         auto = confidence >= t
         if auto.sum() == 0:
             continue
-        auto_acc = float(np.mean(np.asarray(y_true)[auto] == np.asarray(y_pred)[auto]))
+        auto_acc = float(np.mean(y_true[auto] == y_pred[auto]))
         coverage = float(auto.mean())
         if auto_acc >= target_auto_accuracy:
             key = (-coverage, -auto_acc, float(t))
@@ -78,7 +90,7 @@ def choose_escalation_threshold(y_true, y_pred, confidence, target_auto_accuracy
                 best = (key, float(t), auto_acc, coverage)
     if best is None:
         idx = int(np.argmax(confidence))
-        return float(confidence[idx]), float(np.asarray(y_true)[idx] == np.asarray(y_pred)[idx]), float(1 / len(confidence))
+        return float(confidence[idx]), float(y_true[idx] == y_pred[idx]), float(1 / len(confidence))
     return best[1], best[2], best[3]
 
 
@@ -116,14 +128,21 @@ def main():
     cm = confusion_matrix(test["category"], test_pred, labels=labels)
     report = classification_report(test["category"], test_pred, labels=labels, output_dict=True, zero_division=0)
 
-    errors = test.assign(predicted=test_pred, confidence=test_conf)
-    errors = errors.loc[errors["category"] != errors["predicted"]].sort_values("confidence", ascending=False).head(100)
+    analysis = test.assign(
+        predicted=test_pred,
+        confidence=test_conf,
+        auto_route=test_auto,
+        correct=(test["category"].to_numpy() == test_pred),
+    )
+    errors = analysis.loc[~analysis["correct"]].sort_values("confidence", ascending=False).head(100)
+    auto_route_errors = analysis.loc[analysis["auto_route"] & ~analysis["correct"]].sort_values("confidence", ascending=False).head(100)
 
     joblib.dump({"model": model, "escalation_threshold": threshold, "confidence_type": "probability_max_or_svc_margin_gap"}, ART / "model.joblib")
     val_df.to_csv(ART / "validation_metrics.csv", index=False)
     pd.DataFrame(cm, index=labels, columns=labels).to_csv(ART / "test_confusion_matrix.csv")
     pd.DataFrame(report).T.to_csv(ART / "test_classification_report.csv")
     errors.to_csv(ART / "error_analysis.csv", index=False)
+    auto_route_errors.to_csv(ART / "auto_route_errors.csv", index=False)
 
     summary = {
         "data_audit": audit,
@@ -136,13 +155,15 @@ def main():
             "threshold": float(threshold),
             "validation_auto_route_accuracy": float(auto_acc),
             "validation_auto_route_coverage": float(coverage),
-            "confidence_definition": "max class probability for probabilistic models; top-vs-second decision margin gap for LinearSVC",
+            "threshold_search": "all distinct validation confidence values",
+            "confidence_definition": "max class probability for probabilistic models; sorted top-vs-second decision margin gap for LinearSVC",
         },
         "test_result": {
             **test_metrics,
             "auto_route_accuracy": test_auto_accuracy,
             "auto_route_coverage": test_coverage,
             "human_escalation_rate": test_escalation_rate,
+            "auto_route_errors": int((test_auto & (test["category"].to_numpy() != test_pred)).sum()),
         },
         "claim_boundary": "offline intent classification and confidence-aware routing on Banking77; no guarantee of live support resolution, CSAT, cost reduction, or causal business lift",
     }
