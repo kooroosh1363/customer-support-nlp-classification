@@ -12,14 +12,19 @@ def test_pipeline_end_to_end():
 
     assert metrics["data_audit"]["classes"] == 77
     assert metrics["data_audit"]["test_rows"] > 0
+    assert metrics["data_audit"]["train_val_exact_text_overlap"] == 0
+    assert metrics["data_audit"]["train_test_exact_text_overlap"] == 0
     assert metrics["selected_model"] in {
         "majority_baseline", "multinomial_nb", "logistic_regression", "linear_svc"
     }
-    assert 0 <= metrics["test_result"]["macro_f1"] <= 1
-    assert 0 <= metrics["test_result"]["auto_route_accuracy"] <= 1
-    assert 0 <= metrics["test_result"]["auto_route_coverage"] <= 1
-    assert 0 <= metrics["test_result"]["human_escalation_rate"] <= 1
-    assert abs(metrics["test_result"]["auto_route_coverage"] + metrics["test_result"]["human_escalation_rate"] - 1) < 1e-9
+    assert metrics["escalation_policy"]["threshold_search"] == "all distinct validation confidence values"
+    assert metrics["escalation_policy"]["validation_auto_route_accuracy"] >= 0.90
+
+    test = metrics["test_result"]
+    for key in ["macro_f1", "weighted_f1", "macro_precision", "macro_recall", "auto_route_accuracy", "auto_route_coverage", "human_escalation_rate"]:
+        assert 0 <= test[key] <= 1
+    assert abs(test["auto_route_coverage"] + test["human_escalation_rate"] - 1) < 1e-9
+    assert test["auto_route_errors"] >= 0
 
     val = pd.read_csv(root / "artifacts" / "validation_metrics.csv")
     assert set(val["model"]) == {
@@ -29,3 +34,4 @@ def test_pipeline_end_to_end():
     assert (root / "artifacts" / "test_classification_report.csv").exists()
     assert (root / "artifacts" / "test_confusion_matrix.csv").exists()
     assert (root / "artifacts" / "error_analysis.csv").exists()
+    assert (root / "artifacts" / "auto_route_errors.csv").exists()
